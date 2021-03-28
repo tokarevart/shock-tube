@@ -93,49 +93,43 @@ impl Solver {
         }
     }
 
-    fn output_pressure(&self, out: &mut impl Write) {
+    fn output_by(
+        &self, out: &mut impl Write, 
+        f: impl Fn(std::slice::Iter<'_, FieldPoint>
+    ) -> String) {
+
         for j in 1..1 + self.num_r {
             let beg = (self.num_z + 2) * j + 1;
             let end = beg + self.num_z;
             writeln!(
                 out, "{}", 
-                self.field[beg..end]
-                    .iter()
-                    .map(|x| format!("{:e}", x.p))
-                    .reduce(|acc, p| format!("{},{}", acc, p))
-                    .unwrap()
+                f(self.field[beg..end].iter())
             ).unwrap();
         }
+    }
+
+    fn output_pressure(&self, out: &mut impl Write) {
+        self.output_by(out, |iter| {
+            iter.map(|x| format!("{:e}", x.p))
+                .reduce(|acc, p| format!("{},{}", acc, p))
+                .unwrap()
+        })
     }
 
     fn output_temperature(&self, out: &mut impl Write) {
-        for j in 1..1 + self.num_r {
-            let beg = (self.num_z + 2) * j + 1;
-            let end = beg + self.num_z;
-            writeln!(
-                out, "{}", 
-                self.field[beg..end]
-                    .iter()
-                    .map(|x| format!("{:e}", x.temperature()))
-                    .reduce(|acc, p| format!("{},{}", acc, p))
-                    .unwrap()
-            ).unwrap();
-        }
+        self.output_by(out, |iter| {
+            iter.map(|x| format!("{:e}", x.temperature()))
+                .reduce(|acc, p| format!("{},{}", acc, p))
+                .unwrap()
+        })
     }
 
     fn output_velocity(&self, out: &mut impl Write) {
-        for j in 1..1 + self.num_r {
-            let beg = (self.num_z + 2) * j + 1;
-            let end = beg + self.num_z;
-            writeln!(
-                out, "{}", 
-                self.field[beg..end]
-                    .iter()
-                    .map(|x| format!("{:e}^{:e}", x.u, x.v))
-                    .reduce(|acc, x| format!("{},{}", acc, x))
-                    .unwrap()
-            ).unwrap();
-        }
+        self.output_by(out, |iter| {
+            iter.map(|x| format!("{:e}^{:e}", x.u, x.v))
+                .reduce(|acc, x| format!("{},{}", acc, x))
+                .unwrap()
+        })
     }
 }
 
