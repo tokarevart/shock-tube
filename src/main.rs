@@ -29,6 +29,10 @@ impl FieldPoint {
             k: ip.k, cp: ip.cp 
         }
     }
+
+    fn temperature(&self) -> f64 {
+        (self.p * self.k) / (self.rho * self.cp * (self.k - 1.0))
+    }
 }
 
 struct Solver {
@@ -104,6 +108,21 @@ impl Solver {
         }
     }
 
+    fn output_temperature(&self, out: &mut impl Write) {
+        for j in 1..1 + self.num_r {
+            let beg = (self.num_z + 2) * j + 1;
+            let end = beg + self.num_z;
+            writeln!(
+                out, "{}", 
+                self.field[beg..end]
+                    .iter()
+                    .map(|x| format!("{:e}", x.temperature()))
+                    .reduce(|acc, p| format!("{},{}", acc, p))
+                    .unwrap()
+            ).unwrap();
+        }
+    }
+
     fn output_velocity(&self, out: &mut impl Write) {
         for j in 1..1 + self.num_r {
             let beg = (self.num_z + 2) * j + 1;
@@ -162,10 +181,9 @@ fn main() {
 
     let solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dtime, dz, dr);
 
-    let mut pressure_file = File::create("pressure.csv").unwrap();
-    let mut velocity_file = File::create("velocity.csv").unwrap();
-    solver.output_pressure(&mut pressure_file);
-    solver.output_velocity(&mut velocity_file);
+    solver.output_pressure(&mut File::create("pressure.csv").unwrap());
+    solver.output_temperature(&mut File::create("temperature.csv").unwrap());
+    solver.output_velocity(&mut File::create("velocity.csv").unwrap());
 
     println!("{:?}", air);
     println!("{:?}", fuel);
