@@ -1,52 +1,172 @@
+#![allow(dead_code)]
+
+use std::{fs::File, io::{Write, stdout}};
+
 #[derive(Clone, Copy, Debug)]
 struct FieldPoint {
     u: f64,
     v: f64,
-    P: f64,
-    E: f64,
+    p: f64,
+    e: f64,
     rho: f64,
     k: f64,
-    Cp: f64,
+    cp: f64,
 }
 
-struct Solution {
-    field: Vec<FieldPoint>,
-    t: f64,
+impl FieldPoint {
+    fn zeros() -> Self {
+        FieldPoint{ 
+            u: 0.0, v: 0.0, 
+            p: 0.0, e: 0.0, rho: 0.0, 
+            k: 0.0, cp: 0.0 
+        }
+    }
+
+    fn from_initconds(ip: &InitParams) -> Self {
+        FieldPoint{ 
+            u: 0.0, v: 0.0, 
+            p: ip.p, e: ip.e, rho: ip.rho, 
+            k: ip.k, cp: ip.cp 
+        }
+    }
+}
+
+struct Solver {
+    field: Box<[FieldPoint]>,
+    lagr_bnds_u: Box<[FieldPoint]>,
+    lagr_bnds_v: Box<[FieldPoint]>,
+
+    time: f64,
+    dtime: f64,
+    dz: f64,
+    dr: f64,
+
+    num_z: usize,
+    num_r: usize, 
+}
+
+impl Solver {
+    fn field_get(&self, i: usize, j: usize) -> &FieldPoint {
+        &self.field[j * self.num_z + i]
+    }
+
+    fn init_conds(
+        air: &InitParams, fuel: &InitParams, 
+        num_r: usize, num_z_hp: usize, num_z: usize
+    ) -> Box<[FieldPoint]> {
+
+        let mut field = vec![
+            FieldPoint::from_initconds(air); 
+            (num_z + 2) * (num_r + 2)
+        ].into_boxed_slice();
+        let fuel_fp = FieldPoint::from_initconds(fuel);
+        for j in 0..num_r + 2 {
+            let beg = j * (num_z + 2);
+            let end = beg + num_z_hp + 1;
+            field[beg..end].fill(fuel_fp);
+        }
+        field
+    }
+
+    fn new(
+        air: &InitParams, fuel: &InitParams, 
+        num_r: usize, num_z_hp: usize, num_z_lp: usize, 
+        dtime: f64, dz: f64, dr: f64
+    ) -> Self {
+
+        let num_z = num_z_hp + num_z_lp;
+        let field = Self::init_conds(air, fuel, num_r, num_z_hp, num_z);
+        let lagr_bnds_u = vec![
+            FieldPoint::zeros(); 
+            (num_z + 1) * num_r
+        ].into_boxed_slice();
+        let lagr_bnds_v = lagr_bnds_u.clone();
+
+        Solver{ 
+            field, lagr_bnds_u, lagr_bnds_v, 
+            time: 0.0, dtime, dz, dr, 
+            num_r, num_z
+        }
+    }
+
+    fn output_pressure(&self, out: &mut impl Write) {
+        for j in 1..1 + self.num_r {
+            let beg = (self.num_z + 2) * j + 1;
+            let end = beg + self.num_z;
+            writeln!(
+                out, "{}", 
+                self.field[beg..end]
+                    .iter()
+                    .map(|x| format!("{:e}", x.p))
+                    .reduce(|acc, p| format!("{},{}", acc, p))
+                    .unwrap()
+            ).unwrap();
+        }
+    }
+
+    fn output_velocity(&self, out: &mut impl Write) {
+        for j in 1..1 + self.num_r {
+            let beg = (self.num_z + 2) * j + 1;
+            let end = beg + self.num_z;
+            writeln!(
+                out, "{}", 
+                self.field[beg..end]
+                    .iter()
+                    .map(|x| format!("{:e}^{:e}", x.u, x.v))
+                    .reduce(|acc, x| format!("{},{}", acc, x))
+                    .unwrap()
+            ).unwrap();
+        }
+    }
 }
 
 const ATM: f64 = 101325.0;
 
-struct InitConds {
-    P: f64,
-    T: f64,
-    R: f64,
+#[derive(Clone, Copy, Debug)]
+struct InitParams {
+    p: f64,
+    t: f64,
+    r: f64,
     k: f64,
-    Cp: f64,
+    cp: f64,
     rho: f64,
-    E: f64,
+    e: f64,
 }
 
-impl InitConds {
-    fn new(P: f64, T: f64, R: f64, k: f64) -> Self {
-        let Cp = R * k / (k - 1.0);
-        let rho = P / (R * T);
-        let E = P / ((k - 1.0) * rho);
-        InitConds{ P, T, R, k, Cp, rho, E }
+impl InitParams {
+    fn new(p: f64, t: f64, r: f64, k: f64) -> Self {
+        let cp = r * k / (k - 1.0);
+        let rho = p / (r * t);
+        let e = p / ((k - 1.0) * rho);
+        InitParams{ p, t, r, k, cp, rho, e }
     }
 }
 
-fn air_init_conds() -> InitConds {
-    InitConds::new(ATM, 297.0, 287.0, 1.4)
+fn air_init_params() -> InitParams {
+    InitParams::new(ATM, 293.0, 287.0, 1.4)
 }
 
-fn fuel_init_conds() -> InitConds {
-    InitConds::new(40.0 * ATM, 400.0, 310.0, 1.2)
+fn fuel_init_params() -> InitParams {
+    InitParams::new(40.0 * ATM, 400.0, 310.0, 1.2)
 }
 
 fn main() {
-    let air = air_init_conds();
-    let fuel = fuel_init_conds();
+    let air = air_init_params();
+    let fuel = fuel_init_params();
+    let num_r = 10;
+    let num_z_hp = 50;
+    let num_z_lp = 450;
+    let dtime = 1e-6;
+    let dz = 5e-3;
+    let dr = dz;
 
+    let solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dtime, dz, dr);
 
-    println!("Hello, world!");
+    let mut pressure_file = File::create("pressure.csv").unwrap();
+    let mut velocity_file = File::create("velocity.csv").unwrap();
+    solver.output_pressure(&mut pressure_file);
+    solver.output_velocity(&mut velocity_file);
+
+    println!("{:?}", air);
+    println!("{:?}", fuel);
 }
