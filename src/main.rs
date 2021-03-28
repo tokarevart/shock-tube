@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{fs::File, io::{Write, stdout}};
+use std::{fs::File, io::Write};
 
 #[derive(Clone, Copy, Debug)]
 struct FieldPoint {
