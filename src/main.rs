@@ -1,40 +1,6 @@
 #![allow(dead_code)]
 
 use std::{fs::File, io::Write};
-use itertools::izip;
-
-// #[derive(Clone, Copy, Debug)]
-// struct FieldPoint {
-//     u: f64,
-//     v: f64,
-//     p: f64,
-//     e: f64,
-//     rho: f64,
-//     k: f64,
-//     cp: f64,
-// }
-
-// impl FieldPoint {
-//     fn zeros() -> Self {
-//         FieldPoint{ 
-//             u: 0.0, v: 0.0, 
-//             p: 0.0, e: 0.0, rho: 0.0, 
-//             k: 0.0, cp: 0.0 
-//         }
-//     }
-
-//     fn from_initconds(ip: &InitParams) -> Self {
-//         FieldPoint{ 
-//             u: 0.0, v: 0.0, 
-//             p: ip.p, e: ip.e, rho: ip.rho, 
-//             k: ip.k, cp: ip.cp 
-//         }
-//     }
-
-//     fn temperature(&self) -> f64 {
-//         (self.p * self.k) / (self.rho * self.cp * (self.k - 1.0))
-//     }
-// }
 
 #[derive(Clone)]
 struct Field {
@@ -48,19 +14,6 @@ struct Field {
 }
 
 impl Field {
-    // fn iter(&self) -> impl Iterator<Item=
-    //         (&f64, &f64, &f64, &f64, &f64, &f64, &f64)> {
-    //     izip!(
-    //         self.u.iter(), 
-    //         self.v.iter(), 
-    //         self.p.iter(), 
-    //         self.e.iter(), 
-    //         self.rho.iter(), 
-    //         self.k.iter(), 
-    //         self.cp.iter(), 
-    //     )
-    // }
-
     fn new_zeros(size: usize) -> Self {
         let b = vec![0.0; size].into_boxed_slice();
         Self{
@@ -163,6 +116,38 @@ macro_rules! update_bnds_along_r {
     }};
 }
 
+macro_rules! euler_loop {
+    ($self:ident, $j:ident,
+        $bl:ident, $br:ident, $bb:ident, $bt:ident,
+        $pl:ident, $pr:ident, $pb:ident, $pt:ident,
+        $dt_div_rho:ident, $idx:ident,
+        $expression:expr) => {{
+
+        for $j in 1..$self.num_r + 1 {
+            let mut $bl = ($j - 1) * ($self.num_z + 1);
+            let mut $bb = ($j - 1) * $self.num_z;
+            let mut $idx = ($self.num_z + 2) * $j + 1;
+            for _ in 1..$self.num_z + 1 {
+                let $br = $bl + 1;
+                let $bt = $bb + $self.num_z;
+        
+                let $pl = $self.bnds_z.p[$bl];
+                let $pr = $self.bnds_z.p[$br];
+                let $pb = $self.bnds_r.p[$bb];
+                let $pt = $self.bnds_r.p[$bt];
+        
+                let $dt_div_rho = $self.dtime / $self.field.rho[$idx];
+        
+                $expression
+        
+                $bl += 1;
+                $bb += 1;
+                $idx += 1;
+            }
+        }
+    }};
+}
+
 impl Solver {
     fn init_conds(
         air: &InitParams, fuel: &InitParams, 
@@ -210,94 +195,109 @@ impl Solver {
     }
 
     fn update_bnds_p(&mut self) {
-        // for j in 0..self.num_r {
-        //     let mut bidx = j * (self.num_z + 1);
-        //     let mut fidx = (j + 1) * (self.num_z + 2);
-        //     for i in 0..self.num_z + 1 {
-        //         self.bnds_z.p[bidx] = 0.5 * (self.field.p[fidx] + self.field.p[fidx + 1]);
-        //         bidx += 1;
-        //         fidx += 1;
-        //     }
-        // }
         update_bnds_along_z!(self, bnds_z, p, field, p);
-
-        // for j in 0..self.num_r + 1 {
-        //     let mut bidx = j * self.num_z;
-        //     let mut fidx = j * (self.num_z + 2) + 1;
-        //     let dfv = self.num_z + 2;
-        //     for i in 0..self.num_z {
-        //         self.bnds_r.p[bidx] = 0.5 * (self.field.p[fidx] + self.field.p[fidx + dfv]);
-        //         bidx += 1;
-        //         fidx += 1;
-        //     }
-        // }
         update_bnds_along_r!(self, bnds_r, p, field, p);
     }
 
     fn update_bnds_uv(&mut self) {
-        // for j in 0..self.num_r {
-        //     let mut bidx = j * (self.num_z + 1);
-        //     let mut fidx = (j + 1) * (self.num_z + 2);
-        //     for i in 0..self.num_z + 1 {
-        //         self.bnds_z.x[bidx] = 0.5 * (self.field.u[fidx] + self.field.u[fidx + 1]);
-        //         bidx += 1;
-        //         fidx += 1;
-        //     }
-        // }
         update_bnds_along_z!(self, bnds_z, x, field, u);
-
-        // for j in 0..self.num_r + 1 {
-        //     let mut bidx = j * self.num_z;
-        //     let mut fidx = j * (self.num_z + 2) + 1;
-        //     let dfv = self.num_z + 2;
-        //     for i in 0..self.num_z {
-        //         self.bnds_r.x[bidx] = 0.5 * (self.field.v[fidx] + self.field.v[fidx + dfv]);
-        //         bidx += 1;
-        //         fidx += 1;
-        //     }
-        // }
         update_bnds_along_r!(self, bnds_r, x, field, v);
     }
 
     fn euler(&mut self) {
-        let num_r = self.num_r;
-        let num_z = self.num_z;
-
         self.update_bnds_p();
 
-        for j in 1..num_r + 1 {
-            let mut bidxl = (j - 1) * (num_z + 1) - 1;
-            let mut bidxb = (j - 1) * num_z - 1;
-            let mut idx = (num_z + 2) * j + 1;
-            for i in 1..num_z + 1 {
-                let bidxr = bidxl + 1;
-                let bidxt = bidxb + num_z;
-                let pl = self.bnds_z.p[bidxl];
-                let pr = self.bnds_z.p[bidxr];
-                let pb = self.bnds_r.p[bidxb];
-                let pt = self.bnds_r.p[bidxt];
-                let dt_div_rho = self.dtime / self.field.rho[idx];
+        euler_loop!(self, j,
+            bl, br, bb, bt, 
+            pl, pr, pb, pt, 
+            dt_div_rho, idx, {
                 self.field.u[idx] -= (pr - pl) / self.dz * dt_div_rho;
                 self.field.v[idx] -= (pt - pb) / self.dr * dt_div_rho;
-                self.update_bnds_uv();
-                // self.field.e[idx] -= () * dt_div_rho;
-
-                bidxl += 1;
-                bidxb += 1;
-                idx += 1;
             }
-        }
-        //
+        );
+
+        // for j in 1..self.num_r + 1 {
+        //     let mut bl = (j - 1) * (self.num_z + 1);
+        //     let mut bb = (j - 1) * self.num_z;
+        //     let mut idx = (self.num_z + 2) * j + 1;
+        //     for _ in 1..self.num_z + 1 {
+        //         let br = bl + 1;
+        //         let bt = bb + self.num_z;
+
+        //         let pl = self.bnds_z.p[bl];
+        //         let pr = self.bnds_z.p[br];
+        //         let pb = self.bnds_r.p[bb];
+        //         let pt = self.bnds_r.p[bt];
+
+        //         let dt_div_rho = self.dtime / self.field.rho[idx];
+
+        //         self.field.u[idx] -= (pr - pl) / self.dz * dt_div_rho;
+        //         self.field.v[idx] -= (pt - pb) / self.dr * dt_div_rho;
+
+        //         bl += 1;
+        //         bb += 1;
+        //         idx += 1;
+        //     }
+        // }
+
+        self.update_bnds_uv();
+
+        euler_loop!(self, j,
+            bl, br, bb, bt, 
+            pl, pr, pb, pt, 
+            dt_div_rho, idx, {
+                let ul = self.bnds_z.x[bl];
+                let ur = self.bnds_z.x[br];
+                let vb = self.bnds_r.x[bb];
+                let vt = self.bnds_r.x[bt];
+
+                self.field.e[idx] -= (
+                    (pr * ur - pl * ul) / self.dz 
+                    + (j as f64 * pt * vt - (j - 1) as f64 * pb * vb
+                    ) / ((j as f64 - 0.5) * self.dr)
+                ) * dt_div_rho;
+            }
+        );
+        
+        // for j in 1..self.num_r + 1 {
+        //     let mut bl = (j - 1) * (self.num_z + 1);
+        //     let mut bb = (j - 1) * self.num_z;
+        //     let mut idx = (self.num_z + 2) * j + 1;
+        //     for _ in 1..self.num_z + 1 {
+        //         let br = bl + 1;
+        //         let bt = bb + self.num_z;
+
+        //         let pl = self.bnds_z.p[bl];
+        //         let pr = self.bnds_z.p[br];
+        //         let pb = self.bnds_r.p[bb];
+        //         let pt = self.bnds_r.p[bt];
+
+        //         let dt_div_rho = self.dtime / self.field.rho[idx];
+
+        //         let ul = self.bnds_z.x[bl];
+        //         let ur = self.bnds_z.x[br];
+        //         let vb = self.bnds_r.x[bb];
+        //         let vt = self.bnds_r.x[bt];
+
+        //         self.field.e[idx] -= (
+        //             (pr * ur - pl * ul) / self.dz 
+        //             + (j as f64 * pt * vt - (j - 1) as f64 * pb * vb
+        //             ) / ((j as f64 - 0.5) * self.dr)
+        //         ) * dt_div_rho;
+
+        //         bl += 1;
+        //         bb += 1;
+        //         idx += 1;
+        //     }
+        // }
     }
 
     fn output_by<T>(
         &self, out: &mut impl Write, fvals: &[T],
         f: impl Fn(&mut dyn Iterator<Item=&T>) -> String
     ) {
-
         for j in 1..1 + self.num_r {
             let beg = (self.num_z + 2) * j + 1;
-            let end = beg + self.num_z;
             writeln!(
                 out, "{}", 
                 f(&mut fvals.iter().skip(beg).take(self.num_z))
@@ -325,7 +325,7 @@ impl Solver {
     fn output_velocity(&self, out: &mut impl Write) {
         let uv: Vec<_> = self.field.u.iter().zip(self.field.v.iter()).collect();
         self.output_by(out, &uv, |iter| {
-            iter.map(|x| format!("{:e}|{:e}", x.0, x.1))
+            iter.map(|x| format!("{:e}^{:e}", x.0, x.1))
                 .reduce(|acc, x| format!("{},{}", acc, x))
                 .unwrap()
         })
@@ -372,7 +372,8 @@ fn main() {
     let dz = 5e-3;
     let dr = dz;
 
-    let solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dtime, dz, dr);
+    let mut solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dtime, dz, dr);
+    solver.euler();
 
     solver.output_pressure(&mut File::create("pressure.csv").unwrap());
     solver.output_temperature(&mut File::create("temperature.csv").unwrap());
