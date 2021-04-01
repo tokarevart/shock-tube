@@ -300,6 +300,19 @@ impl Solver {
         update_avg_bnds_along_r!(self, bnds_r, x, field, v);
     }
 
+    fn update_pressure(&mut self) {
+        for j in 1..self.num_r + 1 {
+            let mut idx = (self.num_z + 2) * j + 1;
+            for _ in 1..self.num_z + 1 {
+                self.field.p[idx] = 
+                    (self.field.k[idx] - 1.0) * self.field.rho[idx] 
+                    * (self.field.e[idx] - 0.5 
+                    * (self.field.u[idx].powi(2) + self.field.v[idx].powi(2)));
+                idx += 1;
+            }
+        }
+    }
+
     fn euler(&mut self, dtime: f64) -> &mut Self {
         self.dtime = dtime;
         self.update_bnds_p();
@@ -412,7 +425,7 @@ impl Solver {
         update_bnd_conds_scalar!(self, e);
         update_bnd_conds_scalar!(self, k);
         update_bnd_conds_scalar!(self, cp);
-        // update_pressure(self);
+        self.update_pressure();
 
         self
     }
