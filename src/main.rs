@@ -86,6 +86,12 @@ struct Solver {
     num_r: usize, 
 }
 
+macro_rules! assert_not_nan {
+    ($val:expr) => {{
+        assert!(!$val.is_nan());
+    }};
+}
+
 macro_rules! update_avg_bnds_along_z {
     ($self:ident, $bnd:ident, $v0:ident, $f:ident, $v1:ident) => {{
         for j in 0..$self.num_r {
@@ -308,12 +314,14 @@ impl Solver {
                     (self.field.k[idx] - 1.0) * self.field.rho[idx] 
                     * (self.field.e[idx] - 0.5 
                     * (self.field.u[idx].powi(2) + self.field.v[idx].powi(2)));
+                assert_not_nan!(self.field.p[idx]);
                 idx += 1;
             }
         }
     }
 
     fn euler(&mut self, dtime: f64) -> &mut Self {
+        println!("euler");
         self.dtime = dtime;
         self.update_bnds_p();
         approx_loop!(self, j, idx,
@@ -325,7 +333,9 @@ impl Solver {
 
                 let dt_div_rho = self.dtime / self.field.rho[idx];
                 self.field.u[idx] -= (pr - pl) / self.dz * dt_div_rho;
+                assert_not_nan!(self.field.u[idx]);
                 self.field.v[idx] -= (pt - pb) / self.dr * dt_div_rho;
+                assert_not_nan!(self.field.v[idx]);
             }
         );
         update_bnd_conds_velocity!(self);
@@ -349,6 +359,7 @@ impl Solver {
                     + (j as f64 * pt * vt - (j - 1) as f64 * pb * vb
                     ) / ((j as f64 - 0.5) * self.dr)
                 ) * dt_div_rho;
+                assert_not_nan!(self.field.e[idx]);
             }
         );
         update_bnd_conds_scalar!(self, e);
@@ -357,6 +368,7 @@ impl Solver {
     }
 
     fn lagrange(&mut self) -> &mut Self {
+        println!("lagrange");
         update_avg_bnds_along_z!(self, idx, idxr, br, {
                 if self.bnds_z.x[br] > 0.0 {
                     update_bnd_prod_along_z!(self, idx, br);
@@ -377,6 +389,7 @@ impl Solver {
     }
 
     fn finalize(&mut self) -> &mut Self {
+        println!("finalize");
         approx_loop!(self, j, idx,
             bl, br, bb, bt, {
                 let rho_euler = self.field.rho[idx];
@@ -386,6 +399,7 @@ impl Solver {
                 self.field.rho[idx] -= 
                     div_rho_x_w!(self, j, bl, br, bb, bt, 
                         dt_div_dz, rho_x, dt_div_sdr, rho_x);
+                assert_not_nan!(self.field.rho[idx]);
 
                 let inv_rho = 1.0 / self.field.rho[idx];
 
@@ -394,38 +408,53 @@ impl Solver {
                     - div_rho_x_w!(self, j, bl, br, bb, bt, 
                         dt_div_dz, rho_x_x, dt_div_sdr, rho_y_x)
                 ) * inv_rho;
+                assert_not_nan!(self.field.u[idx]);
 
                 self.field.v[idx] = (
                     rho_euler * self.field.v[idx] 
                     - div_rho_x_w!(self, j, bl, br, bb, bt, 
                         dt_div_dz, rho_y_x, dt_div_sdr, rho_x_x)
                 ) * inv_rho;
+                assert_not_nan!(self.field.v[idx]);
 
+                let prev_e = self.field.e[idx];
                 self.field.e[idx] = (
                     rho_euler * self.field.e[idx] 
                     - div_rho_x_w!(self, j, bl, br, bb, bt, 
                         dt_div_dz, rho_e_x, dt_div_sdr, rho_e_x)
                 ) * inv_rho;
+                if self.field.e[idx].is_nan() {
+                    let div = div_rho_x_w!(self, j, bl, br, bb, bt, 
+                        dt_div_dz, rho_e_x, dt_div_sdr, rho_e_x);
+                    dbg!(div);
+                    dbg!(rho_euler);
+                    dbg!(inv_rho);
+                    dbg!(prev_e);
+                }
+                assert_not_nan!(self.field.e[idx]);
 
                 self.field.k[idx] = (
                     rho_euler * self.field.k[idx] 
                     - div_rho_x_w!(self, j, bl, br, bb, bt, 
                         dt_div_dz, rho_k_x, dt_div_sdr, rho_k_x)
                 ) * inv_rho;
+                assert_not_nan!(self.field.k[idx]);
 
                 self.field.cp[idx] = (
                     rho_euler * self.field.cp[idx] 
                     - div_rho_x_w!(self, j, bl, br, bb, bt, 
                         dt_div_dz, rho_cp_x, dt_div_sdr, rho_cp_x)
                 ) * inv_rho;
+                assert_not_nan!(self.field.cp[idx]);
             }
         );
+        self.update_pressure();
         update_bnd_conds_velocity!(self);
         update_bnd_conds_scalar!(self, rho);
         update_bnd_conds_scalar!(self, e);
         update_bnd_conds_scalar!(self, k);
         update_bnd_conds_scalar!(self, cp);
-        self.update_pressure();
+        update_bnd_conds_scalar!(self, p);
 
         self
     }
@@ -446,7 +475,7 @@ impl Solver {
     fn output_pressure(&self, out: &mut impl Write) {
         self.output_by(out, &self.field.p, |iter| {
             iter.map(|p| format!("{:e}", p))
-                .reduce(|acc, p| format!("{},{}", acc, p))
+                .reduce(|acc, p| format!("{} {}", acc, p))
                 .unwrap()
         })
     }
@@ -455,7 +484,7 @@ impl Solver {
         let ts: Vec<f64> = (0..self.field.p.len()).map(|x| self.field.temperature_at(x)).collect();
         self.output_by(out, &ts, |iter| {
             iter.map(|t| format!("{:e}", t))
-                .reduce(|acc, t| format!("{},{}", acc, t))
+                .reduce(|acc, t| format!("{} {}", acc, t))
                 .unwrap()
         })
     }
@@ -463,8 +492,8 @@ impl Solver {
     fn output_velocity(&self, out: &mut impl Write) {
         let uv: Vec<_> = self.field.u.iter().zip(self.field.v.iter()).collect();
         self.output_by(out, &uv, |iter| {
-            iter.map(|x| format!("{:e}^{:e}", x.0, x.1))
-                .reduce(|acc, x| format!("{},{}", acc, x))
+            iter.map(|x| format!("{:e} {:e}", x.0, x.1))
+                .reduce(|acc, x| format!("{} {}", acc, x))
                 .unwrap()
         })
     }
@@ -511,14 +540,14 @@ fn main() {
     let dr = dz;
 
     let mut solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dz, dr);
-    for t in (1..).map(|x| x as f64 * dtime).take(5) {
+    for i in 0..100 {
         solver.euler(dtime).lagrange().finalize();
-        println!("t: {}", t);
+        println!("t: {}", i);
     }
 
-    solver.output_pressure(&mut File::create("pressure.csv").unwrap());
-    solver.output_temperature(&mut File::create("temperature.csv").unwrap());
-    solver.output_velocity(&mut File::create("velocity.csv").unwrap());
+    solver.output_pressure(&mut File::create("pressure.ssv").unwrap());
+    solver.output_temperature(&mut File::create("temperature.ssv").unwrap());
+    solver.output_velocity(&mut File::create("velocity.ssv").unwrap());
 
     println!("{:?}", air);
     println!("{:?}", fuel);
