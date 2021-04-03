@@ -1,2 +1,2 @@
-* linguist-vendored
+src/* linguist-vendored
 *.nb linguist-vendored=false
