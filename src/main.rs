@@ -528,8 +528,8 @@ fn fuel_init_params() -> InitParams {
 fn main() {
     let air = air_init_params();
     let fuel = fuel_init_params();
-    println!("{:?}", air);
-    println!("{:?}", fuel);
+    println!("Air {:?}", air);
+    println!("Fuel {:?}", fuel);
     let num_r = 10;
     let num_z_hp = 50;
     let num_z_lp = 450;
