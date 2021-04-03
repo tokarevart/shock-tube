@@ -452,6 +452,14 @@ impl Solver {
         })
     }
 
+    fn output_density(&self, out: &mut impl Write) {
+        self.output_by(out, &self.field.rho, |iter| {
+            iter.map(|rho| format!("{:e}", rho))
+                .reduce(|acc, rho| format!("{} {}", acc, rho))
+                .unwrap()
+        })
+    }
+
     fn output_temperature(&self, out: &mut impl Write) {
         let ts: Vec<f64> = (0..self.field.p.len()).map(|x| self.field.temperature_at(x)).collect();
         self.output_by(out, &ts, |iter| {
@@ -470,8 +478,9 @@ impl Solver {
         })
     }
 
-    fn output_everything(&self, pout: &mut impl Write, tout: &mut impl Write, vout: &mut impl Write) {
+    fn output_everything(&self, pout: &mut impl Write, dout: &mut impl Write, tout: &mut impl Write, vout: &mut impl Write) {
         self.output_pressure(pout);
+        self.output_density(dout);
         self.output_temperature(tout);
         self.output_velocity(vout);
     }
@@ -522,16 +531,18 @@ fn main() {
     let mut solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dz, dr);
 
     let mut pf = File::create("pressure.ssv").unwrap();
+    let mut df = File::create("density.ssv").unwrap();
     let mut tf = File::create("temperature.ssv").unwrap();
     let mut vf = File::create("velocity.ssv").unwrap();
-    solver.output_everything(&mut pf, &mut tf, &mut vf);
-    for i in 0..10000 {
+    solver.output_everything(&mut pf, &mut df, &mut tf, &mut vf);
+    for i in 0..15000 {
         solver.euler(dtime).lagrange().finalize();
-        if (i + 1) % 200 == 0 {
+        if (i + 1) % 300 == 0 {
             pf.write_fmt(format_args!("\n")).unwrap();
+            df.write_fmt(format_args!("\n")).unwrap();
             tf.write_fmt(format_args!("\n")).unwrap();
             vf.write_fmt(format_args!("\n")).unwrap();
-            solver.output_everything(&mut pf, &mut tf, &mut vf);
+            solver.output_everything(&mut pf, &mut df, &mut tf, &mut vf);
         }
     }
 }
