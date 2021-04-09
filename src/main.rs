@@ -27,7 +27,7 @@ impl Field {
         }
     }
 
-    fn set_initcond(&mut self, idx: usize, ip: &InitParams) {
+    fn set_initcond(&mut self, idx: usize, ip: &Params) {
         self.u[idx] = 0.0;
         self.v[idx] = 0.0; 
         self.p[idx] = ip.p; 
@@ -41,6 +41,14 @@ impl Field {
         let k = self.k[idx];
         (self.p[idx] * k) / (self.rho[idx] * self.cp[idx] * (k - 1.0))
     }
+}
+
+#[derive(Copy, Clone)]
+struct FieldUnits{
+    l: f64,
+    a: f64,
+    rho: f64,
+    t: f64,
 }
 
 #[derive(Clone)]
@@ -77,6 +85,7 @@ struct Solver {
     field: Field,
     bnds_z: BndField,
     bnds_r: BndField,
+    prev_urs: Box<[f64]>,
 
     dtime: f64,
     dz: f64,
@@ -84,6 +93,9 @@ struct Solver {
 
     num_z: usize,
     num_r: usize, 
+
+    units: FieldUnits,
+    alpha: i32,
 }
 
 macro_rules! update_avg_bnds_along_z {
@@ -247,7 +259,7 @@ macro_rules! update_bnd_conds_velocity {
 
 impl Solver {
     fn init_conds(
-        air: &InitParams, fuel: &InitParams, 
+        air: &Params, fuel: &Params,
         num_r: usize, num_z_hp: usize, num_z: usize
     ) -> Field {
         let mut field = Field::new_zeros((num_z + 2) * (num_r + 2));
@@ -273,20 +285,33 @@ impl Solver {
     }
 
     fn new(
-        air: &InitParams, fuel: &InitParams, 
+        air: &Params, fuel: &Params, 
         num_r: usize, num_z_hp: usize, num_z_lp: usize, 
         dz: f64, dr: f64
     ) -> Self {
+        Self::new_with_alpha(air, fuel, num_r, num_z_hp, num_z_lp, dz, dr, 1)
+    }
+
+    fn new_with_alpha(
+        air: &Params, fuel: &Params, 
+        num_r: usize, num_z_hp: usize, num_z_lp: usize, 
+        dz: f64, dr: f64, alpha: i32,
+    ) -> Self {
 
         let num_z = num_z_hp + num_z_lp;
-        let field = Self::init_conds(air, fuel, num_r, num_z_hp, num_z);
+        let units = FieldUnits{ l: 1.0, a: air.sound_speed(), rho: air.rho, t: air.t };
+        let air_ununited = air.ununited(&units);
+        let fuel_ununited = fuel.ununited(&units);
+        let field = Self::init_conds(&air_ununited, &fuel_ununited, num_r, num_z_hp, num_z);
         let bnds_z = BndField::new_zeros((num_z + 1) * num_r);
         let bnds_r = BndField::new_zeros(num_z * (num_r + 1));
 
         Solver{ 
             field, bnds_z, bnds_r, 
+            prev_urs: vec![].into_boxed_slice(),
             dtime: 0.0, dz, dr, 
-            num_r, num_z
+            num_r, num_z,
+            units, alpha,
         }
     }
 
@@ -296,6 +321,7 @@ impl Solver {
     }
 
     fn update_bnds_uv(&mut self) {
+        self.prev_urs.clone_from(&self.bnds_z.x);
         update_avg_bnds_along_z!(self, bnds_z, x, field, u);
         update_avg_bnds_along_r!(self, bnds_r, x, field, v);
     }
@@ -314,7 +340,7 @@ impl Solver {
     }
 
     fn euler(&mut self, dtime: f64) -> &mut Self {
-        self.dtime = dtime;
+        self.dtime = dtime * self.units.a / self.units.l;
         self.update_bnds_p();
         approx_loop!(self, j, idx,
             bl, br, bb, bt, {
@@ -339,7 +365,8 @@ impl Solver {
                 let pt = self.bnds_r.p[bt];
 
                 let ul = self.bnds_z.x[bl];
-                let ur = self.bnds_z.x[br];
+                let ur = self.alpha as f64 * self.bnds_z.x[br] 
+                         + (1 - self.alpha) as f64 * self.prev_urs[br];
                 let vb = self.bnds_r.x[bb];
                 let vt = self.bnds_r.x[bt];
 
@@ -431,6 +458,22 @@ impl Solver {
         self
     }
 
+    fn params(&self) -> Box<[Params]> {
+        (0..self.field.p.len()).into_iter()
+            .map(|i| {
+                let u = self.field.u[i] * self.units.a;
+                let v = self.field.v[i] * self.units.a;
+                let p = self.field.p[i] * self.units.rho * self.units.a.powi(2);
+                let t = self.field.temperature_at(i) * self.units.t;
+                let rho = self.field.rho[i] * self.units.rho;
+                let k = self.field.k[i];
+                let r = p / (rho * t);
+                let cp = r * k / (k - 1.0);
+                let e = p / ((k - 1.0) * rho) + (u * u + v * v) * 0.5;
+                Params{ u, v, p, t, r, k, cp, rho, e }
+            }).collect()
+    }
+
     fn output_by<T>(
         &self, out: &mut impl Write, fvals: &[T],
         f: impl Fn(&mut dyn Iterator<Item=&T>) -> String
@@ -444,32 +487,35 @@ impl Solver {
         }
     }
 
-    fn output_pressure(&self, out: &mut impl Write) {
-        self.output_by(out, &self.field.p, |iter| {
+    fn output_pressure(&self, params: &[Params], out: &mut impl Write) {
+        let ps: Vec<f64> = params.iter().map(|x| x.p).collect();
+        self.output_by(out, &ps, |iter| {
             iter.map(|p| format!("{:e}", p))
                 .reduce(|acc, p| format!("{} {}", acc, p))
                 .unwrap()
         })
     }
 
-    fn output_density(&self, out: &mut impl Write) {
-        self.output_by(out, &self.field.rho, |iter| {
+    fn output_density(&self, params: &[Params], out: &mut impl Write) {
+        let rhos: Vec<f64> = params.iter().map(|x| x.rho).collect();
+        self.output_by(out, &rhos, |iter| {
             iter.map(|rho| format!("{:e}", rho))
                 .reduce(|acc, rho| format!("{} {}", acc, rho))
                 .unwrap()
         })
     }
 
-    fn output_heat_capacity_ratio(&self, out: &mut impl Write) {
-        self.output_by(out, &self.field.k, |iter| {
+    fn output_heat_capacity_ratio(&self, params: &[Params], out: &mut impl Write) {
+        let ks: Vec<f64> = params.iter().map(|x| x.k).collect();
+        self.output_by(out, &ks, |iter| {
             iter.map(|k| format!("{:e}", k))
                 .reduce(|acc, k| format!("{} {}", acc, k))
                 .unwrap()
         })
     }
 
-    fn output_temperature(&self, out: &mut impl Write) {
-        let ts: Vec<f64> = (0..self.field.p.len()).map(|x| self.field.temperature_at(x)).collect();
+    fn output_temperature(&self, params: &[Params], out: &mut impl Write) {
+        let ts: Vec<f64> = params.iter().map(|x| x.t).collect();
         self.output_by(out, &ts, |iter| {
             iter.map(|t| format!("{:e}", t))
                 .reduce(|acc, t| format!("{} {}", acc, t))
@@ -477,8 +523,8 @@ impl Solver {
         })
     }
 
-    fn output_velocity(&self, out: &mut impl Write) {
-        let uv: Vec<_> = self.field.u.iter().zip(self.field.v.iter()).collect();
+    fn output_velocity(&self, params: &[Params], out: &mut impl Write) {
+        let uv: Vec<_> = params.iter().map(|x| (x.u, x.v)).collect();
         self.output_by(out, &uv, |iter| {
             iter.map(|x| format!("{:e} {:e}", x.0, x.1))
                 .reduce(|acc, x| format!("{} {}", acc, x))
@@ -486,19 +532,24 @@ impl Solver {
         })
     }
 
-    fn output_everything(&self, pout: &mut impl Write, dout: &mut impl Write, kout: &mut impl Write, tout: &mut impl Write, vout: &mut impl Write) {
-        self.output_pressure(pout);
-        self.output_density(dout);
-        self.output_heat_capacity_ratio(kout);
-        self.output_temperature(tout);
-        self.output_velocity(vout);
+    fn output_everything(&self, params: &[Params], 
+        pout: &mut impl Write, dout: &mut impl Write, 
+        kout: &mut impl Write, tout: &mut impl Write, vout: &mut impl Write) {
+
+        self.output_pressure(params, pout);
+        self.output_density(params, dout);
+        self.output_heat_capacity_ratio(params, kout);
+        self.output_temperature(params, tout);
+        self.output_velocity(params, vout);
     }
 }
 
 const ATM: f64 = 101325.0;
 
 #[derive(Clone, Copy, Debug)]
-struct InitParams {
+struct Params {
+    u: f64,
+    v: f64,
     p: f64,
     t: f64,
     r: f64,
@@ -508,26 +559,56 @@ struct InitParams {
     e: f64,
 }
 
-impl InitParams {
-    fn new(p: f64, t: f64, r: f64, k: f64) -> Self {
+impl Params {
+    fn new_static(p: f64, t: f64, r: f64, k: f64) -> Self {
         let cp = r * k / (k - 1.0);
         let rho = p / (r * t);
         let e = p / ((k - 1.0) * rho);
-        InitParams{ p, t, r, k, cp, rho, e }
+        Params{ u: 0.0, v: 0.0, p, t, r, k, cp, rho, e }
+    }
+
+    fn sound_speed(&self) -> f64 {
+        (self.k * self.r * self.t).sqrt()
+    }
+
+    fn ununited(&self, units: &FieldUnits) -> Self {
+        let u = self.u / units.a;
+        let v = self.v / units.a;
+        let p = self.p / (units.rho * units.a.powi(2));
+        let rho = self.rho / units.rho;
+        let k = self.k;
+        let t = self.t / units.t;
+        let r = p / (rho * t);
+        let cp = r * k / (k - 1.0);
+        let e = p / ((k - 1.0) * rho);
+        Self{ u, v, p, t, r, k, cp, rho, e }
+    }
+
+    fn united(&self, units: &FieldUnits) -> Self {
+        let u = self.u * units.a;
+        let v = self.v * units.a;
+        let p = self.p * (units.rho * units.a.powi(2));
+        let rho = self.rho * units.rho;
+        let k = self.k;
+        let t = self.t * units.t;
+        let r = p / (rho * t);
+        let cp = r * k / (k - 1.0);
+        let e = p / ((k - 1.0) * rho);
+        Self{ u, v, p, t, r, k, cp, rho, e }
     }
 }
 
-fn air_init_params() -> InitParams {
-    InitParams::new(ATM, 293.0, 287.0, 1.4)
+fn air_params() -> Params {
+    Params::new_static(ATM, 293.0, 287.0, 1.4)
 }
 
-fn fuel_init_params() -> InitParams {
-    InitParams::new(40.0 * ATM, 400.0, 310.0, 1.2)
+fn fuel_params() -> Params {
+    Params::new_static(40.0 * ATM, 400.0, 310.0, 1.2)
 }
 
 fn main() {
-    let air = air_init_params();
-    let fuel = fuel_init_params();
+    let air = air_params();
+    let fuel = fuel_params();
     println!("Air {:?}", air);
     println!("Fuel {:?}", fuel);
     let num_r = 10;
@@ -537,20 +618,22 @@ fn main() {
     let dz = 5e-3;
     let dr = dz;
 
-    let mut solver = Solver::new(&air, &fuel, num_r, num_z_hp, num_z_lp, dz, dr);
+    let mut solver = Solver::new_with_alpha(&air, &fuel, num_r, num_z_hp, num_z_lp, dz, dr, 3);
 
     let mut pf = File::create("pressure.ssv").unwrap();
     let mut df = File::create("density.ssv").unwrap();
     let mut kf = File::create("hc-ratio.ssv").unwrap();
     let mut tf = File::create("temperature.ssv").unwrap();
     let mut vf = File::create("velocity.ssv").unwrap();
-    solver.output_everything(&mut pf, &mut df, &mut kf, &mut tf, &mut vf);
-    for i in 0..20000 {
+    let params = solver.params();
+    solver.output_everything(&params, &mut pf, &mut df, &mut kf, &mut tf, &mut vf);
+    for i in 1..=25000 {
         solver.euler(dtime).lagrange().finalize();
-        if (i + 1) % 200 == 0 {
+        if i % 500 == 0 {
             [&mut pf, &mut df, &mut kf, &mut tf, &mut vf].iter_mut()
                 .for_each(|f| f.write_fmt(format_args!("\n")).unwrap());
-            solver.output_everything(&mut pf, &mut df, &mut kf, &mut tf, &mut vf);
+            let params = solver.params();
+            solver.output_everything(&params, &mut pf, &mut df, &mut kf, &mut tf, &mut vf);
         }
     }
 }
