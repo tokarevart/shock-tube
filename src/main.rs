@@ -629,7 +629,7 @@ fn main() {
     solver.output_everything(&params, &mut pf, &mut df, &mut kf, &mut tf, &mut vf);
     for i in 1..=25000 {
         solver.euler(dtime).lagrange().finalize();
-        if i % 500 == 0 {
+        if i % 250 == 0 {
             [&mut pf, &mut df, &mut kf, &mut tf, &mut vf].iter_mut()
                 .for_each(|f| f.write_fmt(format_args!("\n")).unwrap());
             let params = solver.params();
